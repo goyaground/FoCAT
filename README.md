@@ -2,6 +2,20 @@
 
 **FoCAT** (Foundation Causal Adaptive Transformer) is a transformer-based hypernetwork for estimating Conditional Average Treatment Effects (CATE). Unlike conventional models that require training and hyperparameter tuning, FoCAT takes a training dataset as input and instantly generates the weights of a fully connected neural network for inference. This architecture eliminates the need for iterative optimization at test time and enables extremely fast inference. The model is trained on a wide variety of synthetically generated tasks, allowing it to generalize across diverse data distributions without explicit regularization.
 
+## How does it work
+
+FoCAT consists of two parts: transformer neural network and a dense one. The main idea of the data processing can be described with the following diagram:
+
+![Diagram 1](img/diagram1.png)
+
+The more detailed view can be found in the following one:
+
+![Diagram 2](img/FoCAT_3-Model.drawio.svg)
+
+The main advantage of such a scheme is that we can perform training on the huge amount of a syntetic datasets with the simulated conditional average treatment effect. FoCAT further doesn't need to perform fine-tuning on the test data or perform search of the proper hyperparameters (it is actually impossible to do within the treatment effect task). Data generator can be described with the following diagram:
+
+![Diagram 3](img/Training_(3).drawio)
+
 ## Environment Setup
 
 To set up the environment using `conda`, run the following commands:
