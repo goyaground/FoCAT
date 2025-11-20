@@ -4,15 +4,15 @@
 
 ## How does it work
 
-FoCAT consists of two parts: transformer neural network and a dense one. The main idea of the data processing can be described with the following diagram:
+FoCAT consists of two parts: transformer neural network and a dense neural network. The main data processing pipeline can be described by the following diagram:
 
 ![Diagram 1](img/diagram_1.png)
 
-The more detailed view can be found in the following one:
+A more detailed view is provided in the following diagram:
 
 ![Diagram 2](img/FoCAT_3-Model.drawio.svg)
 
-The main advantage of such a scheme is that we can perform training on the huge amount of a syntetic datasets with the simulated conditional average treatment effect. FoCAT further doesn't need to perform fine-tuning on the test data or perform search of the proper hyperparameters (it is actually impossible to do within the treatment effect task). Data generator can be described with the following diagram:
+The main advantage of this architecture is that we can perform training on the huge amount of a syntetic datasets with the simulated conditional average treatment effect. After training, FoCAT further doesn't need to perform fine-tuning on the test data or a search for optimal hyperparameters (it is actually impossible to do in the context of treatment effect estimation). The data generation process is illustrated in the following diagram:
 
 ![Diagram 3](img/Training_(3).drawio.svg)
 
