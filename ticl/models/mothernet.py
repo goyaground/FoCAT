@@ -179,12 +179,68 @@ class MotherNet(torch.nn.Module):
             return x
         shape = x.shape[:-1] + (feats_n - x.shape[-1],)
         return np.concatenate((x, np.zeros(shape)), axis=-1)
+
+    def _validate_support(self, X, y, c):
+        try:
+            X = np.asarray(X, dtype=np.float64)
+            y = np.asarray(y, dtype=np.float64)
+            c = np.asarray(c)
+        except (TypeError, ValueError) as error:
+            raise ValueError("X, y, and treatment must be numeric arrays") from error
+        if X.ndim not in (2, 3):
+            raise ValueError("X must be a non-empty 2-D or 3-D array")
+        if X.shape[0] == 0 or X.shape[-1] == 0:
+            raise ValueError("X must be a non-empty 2-D or 3-D array")
+        if y.shape != X.shape[:-1] or c.shape != X.shape[:-1]:
+            raise ValueError("X, y, and treatment shape must match")
+        if X.shape[-1] > self.encoder.in_features:
+            raise ValueError(
+                f"X must have at most {self.encoder.in_features} features"
+            )
+        if not np.isfinite(X).all() or not np.isfinite(y).all():
+            raise ValueError("X and y must contain only finite values")
+        if not np.isin(c, (0, 1)).all():
+            raise ValueError("treatment must be binary with values 0 and 1")
+        c = c.astype(np.int64, copy=False)
+        treatment_tasks = c[:, None] if c.ndim == 1 else c
+        for task in range(treatment_tasks.shape[1]):
+            if set(np.unique(treatment_tasks[:, task])) != {0, 1}:
+                raise ValueError("treatment must contain both treatment arms per task")
+        return X, y, c
+
+    def _fit_quantile_transform(self, X: np.ndarray) -> np.ndarray:
+        n_quantiles = max(1, X.shape[0] // 5)
+        if X.ndim == 2:
+            self.q_tf = QuantileTransformer(
+                output_distribution='normal', n_quantiles=n_quantiles
+            )
+            return self.q_tf.fit_transform(X)
+        self.q_tf = []
+        transformed = []
+        for task in range(X.shape[1]):
+            transformer = QuantileTransformer(
+                output_distribution='normal', n_quantiles=n_quantiles
+            )
+            self.q_tf.append(transformer)
+            transformed.append(transformer.fit_transform(X[:, task, :]))
+        return np.stack(transformed, axis=1)
+
+    def _transform_query(self, X: np.ndarray) -> np.ndarray:
+        if self._fit_ndim == 2:
+            return self.q_tf.transform(X)
+        transformed = [
+            transformer.transform(X[:, task, :])
+            for task, transformer in enumerate(self.q_tf)
+        ]
+        return np.stack(transformed, axis=1)
     
     @torch.inference_mode()    
     def fit(self, X: np.ndarray, y: np.ndarray, c: np.ndarray):
-        assert X.ndim == 2 or X.ndim == 3
-        self.q_tf = QuantileTransformer(output_distribution='normal', n_quantiles=X.shape[0] // 5)
-        X = self.q_tf.fit_transform(X)
+        X, y, c = self._validate_support(X, y, c)
+        self._fit_ndim = X.ndim
+        self.n_features_in_ = X.shape[-1]
+        self._n_tasks = 1 if X.ndim == 2 else X.shape[1]
+        X = self._fit_quantile_transform(X)
         X = self.pad_zeros(X)
         tr_func = lambda arg: torch.from_numpy(arg[0]).to(device=self.get_device(), dtype=arg[1])
         df_dt = torch.get_default_dtype()
@@ -193,17 +249,20 @@ class MotherNet(torch.nn.Module):
             X_t = X_t[:, None, :]
             y_t = y_t[:, None]
             c_t = c_t[:, None]
-        y_mean_0 = torch.mean(y_t[c_t == 0], dim=0, keepdim=True)
-        y_mean_1 = torch.mean(y_t[c_t == 1], dim=0, keepdim=True)
+        mask_0 = c_t == 0
+        mask_1 = c_t == 1
+        y_mean_0 = torch.where(mask_0, y_t, 0).sum(dim=0, keepdim=True) / mask_0.sum(dim=0, keepdim=True)
+        y_mean_1 = torch.where(mask_1, y_t, 0).sum(dim=0, keepdim=True) / mask_1.sum(dim=0, keepdim=True)
         y_std = torch.std(y_t, dim=0, keepdim=True)
         y_std[y_std < 1e-6] = 1
         self.y_std = y_std
-        self.y_mean_0 = y_mean_0[None, :]
-        self.y_mean_1 = y_mean_1[None, :]
-        y_t_0 = (y_t[c_t == 0] - y_mean_0) / y_std[0]
-        y_t_1 = (y_t[c_t == 1] - y_mean_1) / y_std[0]
-        y_t[c_t == 0] = y_t_0
-        y_t[c_t == 1] = y_t_1
+        self.y_mean_0 = y_mean_0
+        self.y_mean_1 = y_mean_1
+        y_t = torch.where(
+            mask_0,
+            (y_t - y_mean_0) / y_std,
+            (y_t - y_mean_1) / y_std,
+        )
         # print(f"Fitting model for {X_t.shape[1]} task(s) with {X_t.shape[0]} points")
         self.pred_layers = self.calc_nn_weights(X_t, y_t, c_t)
         if self.bins_output_n > 0:
@@ -213,7 +272,7 @@ class MotherNet(torch.nn.Module):
             ruler_min = y_min - y_max
             ruler_diff = (ruler_max - ruler_min) / self.bins_output_n
             idx = torch.arange(self.bins_output_n, device=self.get_device())[None, :]
-            self.y_ruler = idx * ruler_diff + ruler_min
+            self.y_ruler = idx * ruler_diff.T + ruler_min.T
         return self
     
     @torch.inference_mode()
@@ -221,7 +280,25 @@ class MotherNet(torch.nn.Module):
         layers = getattr(self, 'pred_layers', None)
         if layers is None:
             raise RuntimeError("Fit model first")
-        X = self.q_tf.transform(X)
+        try:
+            X = np.asarray(X, dtype=np.float64)
+        except (TypeError, ValueError) as error:
+            raise ValueError("X must be a numeric array") from error
+        if X.ndim != self._fit_ndim:
+            raise ValueError("query X must have the same dimensionality as support X")
+        if X.shape[0] == 0:
+            raise ValueError("query X must be non-empty")
+        if X.shape[-1] != self.n_features_in_:
+            raise ValueError(
+                f"query X must have the same {self.n_features_in_} features as support X"
+            )
+        if X.ndim == 3 and X.shape[1] != self._n_tasks:
+            raise ValueError(
+                f"query X must have the same {self._n_tasks} tasks as support X"
+            )
+        if not np.isfinite(X).all():
+            raise ValueError("query X must contain only finite values")
+        X = self._transform_query(X)
         X = self.pad_zeros(X)
         if X.ndim == 2:
             X = X[:, None, :]
@@ -236,12 +313,14 @@ class MotherNet(torch.nn.Module):
                     torch.argmax(cur_pred, dim=-1)
                 )
             else:
-                pred_idx_list.append(cur_pred)
+                pred_idx_list.append(cur_pred.squeeze(-1))
         pred_idx = torch.cat(pred_idx_list, dim=0)
         if self.bins_output_n > 0:
-            y = torch.take_along_dim(self.y_ruler, pred_idx.T, dim=-1).T
+            y = torch.gather(self.y_ruler, 1, pred_idx.T).T
         else:
             y = pred_idx
         y = y * self.y_std + (self.y_mean_1 - self.y_mean_0)
         pred = y.cpu().numpy()
-        return pred.squeeze()
+        if self._fit_ndim == 2:
+            return pred[:, 0].reshape(-1)
+        return pred.reshape(X.shape[0], self._n_tasks)
