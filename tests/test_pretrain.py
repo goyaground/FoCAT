@@ -22,6 +22,8 @@ def test_full_config_preserves_repository_model_prior_and_global_batch() -> None
     assert config["transformer"]["emsize"] == 512
     assert config["transformer"]["nlayers"] == 12
     assert config["transformer"]["nhead"] == 8
+    assert config["transformer"]["classification_task"] is False
+    assert config["transformer"]["y_encoder"] == "linear"
     assert config["mothernet"]["predicted_hidden_layer_size"] == 512
     assert config["mothernet"]["predicted_hidden_layers"] == 2
     assert config["mothernet"]["weight_embedding_rank"] == 16

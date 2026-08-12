@@ -64,6 +64,9 @@ def resolve_config(profile: str, world_size: int) -> dict[str, Any]:
     if world_size < 1:
         raise ValueError("world_size must be positive")
     config = get_model_default_config("mothernet")
+    if not config["transformer"]["classification_task"]:
+        config["prior"]["classification"]["max_num_classes"] = 0
+        config["transformer"]["y_encoder"] = "linear"
     repository_global_batch = int(config["dataloader"]["batch_size"])
     if profile == "full":
         if repository_global_batch % world_size != 0:
