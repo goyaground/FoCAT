@@ -33,7 +33,7 @@ class ResumeState:
 def capture_rng_state() -> dict[str, Any]:
     cuda_state = None
     if torch.cuda.is_available() and torch.cuda.is_initialized():
-        cuda_state = torch.cuda.get_rng_state_all()
+        cuda_state = torch.cuda.get_rng_state()
     return {
         "python": random.getstate(),
         "numpy": np.random.get_state(),
@@ -49,7 +49,7 @@ def restore_rng_state(state: dict[str, Any]) -> None:
     if state.get("cuda") is not None:
         if not torch.cuda.is_available():
             raise RuntimeError("checkpoint contains CUDA RNG state but CUDA is unavailable")
-        torch.cuda.set_rng_state_all(state["cuda"])
+        torch.cuda.set_rng_state(state["cuda"])
 
 
 def _unwrapped_model(model: torch.nn.Module) -> torch.nn.Module:

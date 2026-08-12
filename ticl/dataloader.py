@@ -94,12 +94,8 @@ class PriorDataLoader(DataLoader):
         return self.gbm(epoch=self.epoch_count)
     
     def iter_safe_gbm(self):
-        
         for _ in range(self.num_steps):
-            try:
-                yield self.gbm(epoch=self.epoch_count - 1)
-            except AssertionError:
-                continue
+            yield self.gbm(epoch=self.epoch_count - 1)
 
     def __iter__(self):
         self.epoch_count += 1

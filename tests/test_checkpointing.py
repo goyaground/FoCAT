@@ -90,6 +90,34 @@ def test_rng_state_round_trip() -> None:
     torch.testing.assert_close(actual[2], expected[2])
 
 
+def test_rng_checkpoint_touches_only_the_current_cuda_device(monkeypatch) -> None:
+    expected = torch.tensor([1, 2, 3], dtype=torch.uint8)
+    restored = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_rng_state", lambda: expected)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_rng_state_all",
+        lambda: pytest.fail("must not initialize every visible CUDA device"),
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "set_rng_state",
+        lambda state: restored.append(state),
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "set_rng_state_all",
+        lambda _state: pytest.fail("must not restore every visible CUDA device"),
+    )
+
+    state = capture_rng_state()
+    restore_rng_state(state)
+
+    assert restored == [expected]
+
+
 def test_checkpoint_payload_contains_resume_contract() -> None:
     payload, _model, _optimizer, _scheduler = make_payload()
 

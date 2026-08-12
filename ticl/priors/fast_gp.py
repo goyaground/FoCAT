@@ -3,7 +3,6 @@ import torch
 
 from ticl.utils import default_device
 from ticl.distributions import parse_distributions, sample_distributions
-import time
 
 # We will use the simplest form of GP model, exact inference
 
@@ -38,8 +37,8 @@ class GPPrior:
                   equidistant_x=False, fix_x=None, epoch=None, single_eval_pos=None):
         with torch.no_grad():
             assert not (equidistant_x and (fix_x is not None))
-            is_fitted = False
-            while not is_fitted:
+            last_error = None
+            for attempt in range(5):
                 hypers = sample_distributions(self.config)
                 with gpytorch.settings.fast_computations(*hypers.get('fast_computations', (True, True, True))):
                     if equidistant_x:
@@ -53,10 +52,6 @@ class GPPrior:
                             x = torch.rand(batch_size, n_samples, num_features, device=device)
                         else:
                             x = torch.randn(batch_size, n_samples, num_features, device=device)
-                    model, likelihood = get_model(x, torch.Tensor(), hypers)
-                    model.to(device)
-
-                    error_times = 5
                     try:
                         with gpytorch.settings.prior_mode(True):
                             model, likelihood = get_model(x, torch.Tensor(), hypers)
@@ -66,23 +61,18 @@ class GPPrior:
                             d = likelihood(d)
                             sample_0 = d.sample().transpose(0, 1)
                             sample_1 = d.sample().transpose(0, 1)
-                            is_fitted = True
-                    except RuntimeError:  # This can happen when torch.linalg.eigh fails. Restart with new init resolves this.
-                        print('GP Fitting unsuccessful, retrying.. ')
-                        print(x)
-                        print(self.config)
-                        # clear the memory
-                        torch.cuda.empty_cache()
-                        del model, likelihood, d
-                        time.sleep(1)
-                        error_times -= 1
-                        assert error_times == 0
-                            
+                    except RuntimeError as error:  # torch.linalg factorization can fail for a sampled GP.
+                        last_error = error
+                        if str(device).startswith("cuda") and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        if attempt < 4:
+                            print(f'GP sampling failed, retrying ({attempt + 1}/5): {error}')
+                        continue
 
-            if bool(torch.any(torch.isnan(x)).detach().cpu().numpy()):
-                print({"noise": hypers['noise'], "outputscale": hypers['outputscale'],
-                       "lengthscale": hypers['lengthscale'], 'batch_size': batch_size})
+                    if bool(torch.any(torch.isnan(x)).detach().cpu().numpy()):
+                        print({"noise": hypers['noise'], "outputscale": hypers['outputscale'],
+                               "lengthscale": hypers['lengthscale'], 'batch_size': batch_size})
 
-            # TODO: Multi output
-            res = x.transpose(0, 1), sample_0, sample_1  # x.shape = (T,B,H)
-        return res
+                    # TODO: Multi output
+                    return x.transpose(0, 1), sample_0, sample_1  # x.shape = (T,B,H)
+            raise RuntimeError("GP prior sampling failed after 5 attempts") from last_error
