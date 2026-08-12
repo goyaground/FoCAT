@@ -1,3 +1,4 @@
+import copy
 import os, pdb
 import subprocess as sp
 
@@ -76,8 +77,14 @@ def get_gpu_memory():
 # @cache
 def load_model(path, device, verbose=False, f_regressor=False):
     states = torch.load(path, map_location='cpu', weights_only=False)
-    model_state = states[0]
-    config_sample = states[-1]
+    if isinstance(states, dict):
+        if states.get("kind") != "focat_training":
+            raise ValueError(f"Unsupported FoCAT checkpoint kind: {states.get('kind')!r}")
+        model_state = states["model_state"]
+        config_sample = copy.deepcopy(states["config"])
+    else:
+        model_state = states[0]
+        config_sample = copy.deepcopy(states[-1])
     config_sample['device'] = device
     if 'y_encoder' not in config_sample and 'onehot' in str(path):
         # workaround for the single model that was saved without y_encoder
