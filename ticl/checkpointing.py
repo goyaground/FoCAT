@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 import os
 from pathlib import Path
 import random
@@ -157,6 +158,51 @@ def _load_payload(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def _validate_resume_counters(payload: dict[str, Any]) -> None:
+    epoch = int(payload["epoch"])
+    step_in_epoch = int(payload["step_in_epoch"])
+    global_step = int(payload["global_step"])
+    aggregate = int(payload["aggregate_k_gradients"])
+    if epoch < 1:
+        raise ValueError("checkpoint epoch must be positive")
+    if global_step < 1:
+        raise ValueError("checkpoint global_step must be positive")
+    if aggregate < 1:
+        raise ValueError("checkpoint aggregate_k_gradients must be positive")
+    if step_in_epoch < 1:
+        raise ValueError("checkpoint step_in_epoch must be positive")
+    config = payload["config"]
+    num_steps = config.get("dataloader", {}).get("num_steps")
+    if num_steps is not None and step_in_epoch > int(num_steps):
+        raise ValueError(
+            f"checkpoint step_in_epoch {step_in_epoch} exceeds num_steps {num_steps}"
+        )
+    epochs = config.get("optimizer", {}).get("epochs")
+    if epochs is not None and epoch > int(epochs):
+        raise ValueError(f"checkpoint epoch {epoch} exceeds configured epochs {epochs}")
+    if step_in_epoch % aggregate != 0:
+        raise ValueError(
+            "checkpoint step_in_epoch is not at a gradient accumulation boundary"
+        )
+    optimizer_steps = set()
+    for state in payload["optimizer_state"]["state"].values():
+        if "step" not in state:
+            continue
+        value = state["step"]
+        if hasattr(value, "item"):
+            value = value.item()
+        optimizer_steps.add(int(value))
+    if optimizer_steps and optimizer_steps != {global_step}:
+        raise ValueError(
+            f"checkpoint optimizer step {sorted(optimizer_steps)} does not match "
+            f"global_step {global_step}"
+        )
+    if not math.isfinite(float(payload["loss"])):
+        raise ValueError("checkpoint loss must be finite")
+    if not math.isfinite(float(payload["learning_rate"])):
+        raise ValueError("checkpoint learning rate must be finite")
+
+
 def load_training_checkpoint(
     path: str | Path,
     *,
@@ -168,6 +214,7 @@ def load_training_checkpoint(
     restore_rng: bool = True,
 ) -> ResumeState:
     payload = _load_payload(path)
+    _validate_resume_counters(payload)
     saved_world_size = int(payload["world_size"])
     if saved_world_size != expected_world_size:
         raise ValueError(

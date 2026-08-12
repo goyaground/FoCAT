@@ -207,6 +207,47 @@ def test_training_checkpoint_rejects_world_size_change(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"epoch": 0}, "epoch"),
+        ({"step_in_epoch": 9}, "step_in_epoch"),
+        (
+            {"step_in_epoch": 7, "aggregate_k_gradients": 2},
+            "accumulation boundary",
+        ),
+        ({"global_step": 4}, "optimizer step"),
+    ],
+)
+def test_training_checkpoint_rejects_inconsistent_resume_counters(
+    tmp_path: Path,
+    mutation: dict,
+    message: str,
+) -> None:
+    payload, _saved_model, _saved_optimizer, _saved_scheduler = make_payload()
+    payload["config"].update(
+        {
+            "dataloader": {"num_steps": 8},
+            "optimizer": {"epochs": 4},
+        }
+    )
+    payload.update(mutation)
+    checkpoint = tmp_path / "invalid.pt"
+    torch.save(payload, checkpoint)
+    model, optimizer, scheduler = make_optimizer_state(1)
+
+    with pytest.raises(ValueError, match=message):
+        load_training_checkpoint(
+            checkpoint,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            expected_world_size=1,
+            rank=0,
+            restore_rng=False,
+        )
+
+
 def tiny_focat_config():
     config = get_model_default_config("mothernet")
     config["device"] = "cpu"
@@ -264,3 +305,19 @@ def test_inference_loader_accepts_legacy_and_training_checkpoints(
     assert restored_config["model_type"] == "mothernet"
     for expected, actual in zip(model.parameters(), restored.parameters()):
         torch.testing.assert_close(actual, expected)
+
+
+def test_inference_loader_rejects_unknown_training_checkpoint_version(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "future.pt"
+    torch.save(
+        {
+            "kind": "focat_training",
+            "format_version": 999,
+        },
+        checkpoint,
+    )
+
+    with pytest.raises(ValueError, match="format version"):
+        load_model(checkpoint, device="cpu")

@@ -13,6 +13,7 @@ from ticl.model_configs import get_model_default_config
 from ticl.models.mothernet import MotherNet
 from ticl.models.mothernet_reg import MotherNetRegression
 from ticl.config_utils import nested_dict
+from ticl.checkpointing import CHECKPOINT_KIND, FORMAT_VERSION
 
 try:
     from functools import cache
@@ -78,8 +79,13 @@ def get_gpu_memory():
 def load_model(path, device, verbose=False, f_regressor=False):
     states = torch.load(path, map_location='cpu', weights_only=False)
     if isinstance(states, dict):
-        if states.get("kind") != "focat_training":
+        if states.get("kind") != CHECKPOINT_KIND:
             raise ValueError(f"Unsupported FoCAT checkpoint kind: {states.get('kind')!r}")
+        if states.get("format_version") != FORMAT_VERSION:
+            raise ValueError(
+                "Unsupported FoCAT checkpoint format version: "
+                f"{states.get('format_version')!r}"
+            )
         model_state = states["model_state"]
         config_sample = copy.deepcopy(states["config"])
     else:
