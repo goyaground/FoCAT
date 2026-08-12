@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import pytest
 import torch
 
-from pretrain import TrainingOptions, resolve_config, run_training
+import pretrain
+from pretrain import (
+    TrainingOptions,
+    _validate_batch_numerics,
+    _validate_resume_identity,
+    resolve_config,
+    run_training,
+)
 from ticl.dataloader import get_dataloader
 
 
@@ -72,9 +80,63 @@ def test_smoke_config_reduces_only_scale_and_keeps_training_semantics() -> None:
     assert config["optimizer"]["epochs"] == 2
 
 
+def test_partial_nan_share_is_a_fatal_training_error() -> None:
+    with pytest.raises(FloatingPointError, match="non-finite values"):
+        _validate_batch_numerics(
+            torch.tensor(1.25),
+            torch.tensor(0.25),
+            epoch=3,
+            batch_index=17,
+        )
+
+
+def test_resume_identity_rejects_config_and_source_changes() -> None:
+    current_config = resolve_config("smoke", world_size=1)
+    current_source = {
+        "upstream_url": "https://github.com/NTAILab/FoCAT.git",
+        "upstream_base_commit": "608006595eaf2eda40c36f097c369d1efd65d500",
+        "runtime_commit": "current-commit",
+        "runtime_dirty": False,
+    }
+    payload = {
+        "config": copy.deepcopy(current_config),
+        "source": copy.deepcopy(current_source),
+    }
+
+    _validate_resume_identity(payload, current_config, current_source)
+
+    changed_config = copy.deepcopy(payload)
+    changed_config["config"]["prior"]["num_features"] = 99
+    with pytest.raises(ValueError, match="training config"):
+        _validate_resume_identity(changed_config, current_config, current_source)
+
+    changed_source = copy.deepcopy(payload)
+    changed_source["source"]["runtime_commit"] = "different-commit"
+    with pytest.raises(ValueError, match="runtime source"):
+        _validate_resume_identity(changed_source, current_config, current_source)
+
+    _validate_resume_identity(
+        changed_source,
+        current_config,
+        current_source,
+        allow_runtime_change=True,
+    )
+
+
 def test_smoke_training_resumes_optimizer_scheduler_and_global_step(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        pretrain,
+        "_runtime_source",
+        lambda: {
+            "upstream_url": "https://github.com/NTAILab/FoCAT.git",
+            "upstream_base_commit": "608006595eaf2eda40c36f097c369d1efd65d500",
+            "runtime_commit": "test-runtime",
+            "runtime_dirty": False,
+        },
+    )
     checkpoint_dir = tmp_path / "checkpoints"
     first = run_training(
         TrainingOptions(

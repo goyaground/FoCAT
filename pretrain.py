@@ -47,6 +47,7 @@ class TrainingOptions:
     log_every_steps: int = 10
     device: str = "auto"
     cpu_threads: int = 8
+    allow_runtime_change: bool = False
 
 
 @dataclass(frozen=True)
@@ -253,6 +254,75 @@ def _runtime_source() -> dict[str, Any]:
     }
 
 
+def _resume_comparable_config(config: dict[str, Any]) -> dict[str, Any]:
+    comparable = copy.deepcopy(config)
+    comparable.pop("device", None)
+    comparable.pop("num_gpus", None)
+    return comparable
+
+
+def _validate_resume_identity(
+    payload: dict[str, Any],
+    current_config: dict[str, Any],
+    current_source: dict[str, Any],
+    *,
+    allow_runtime_change: bool = False,
+) -> None:
+    if _resume_comparable_config(payload["config"]) != _resume_comparable_config(
+        current_config
+    ):
+        raise ValueError("resume training config does not match the current profile")
+    saved_source = payload.get("source", {})
+    if saved_source.get("runtime_dirty") or current_source.get("runtime_dirty"):
+        raise ValueError("resume requires clean runtime source revisions")
+    upstream_keys = ("upstream_url", "upstream_base_commit")
+    if any(saved_source.get(key) != current_source.get(key) for key in upstream_keys):
+        raise ValueError("resume runtime source has a different upstream identity")
+    if (
+        not allow_runtime_change
+        and saved_source.get("runtime_commit") != current_source.get("runtime_commit")
+    ):
+        raise ValueError(
+            "resume runtime source commit differs; pass --allow-runtime-change "
+            "only for an audited runtime-only upgrade"
+        )
+
+
+def _batch_numeric_error(
+    loss: torch.Tensor,
+    nan_share: torch.Tensor,
+    *,
+    epoch: int,
+    batch_index: int,
+) -> str | None:
+    share = torch.as_tensor(nan_share)
+    if not bool(torch.isfinite(loss).all()):
+        return f"non-finite loss at epoch={epoch} batch={batch_index}: {loss}"
+    if not bool(torch.isfinite(share).all()) or bool(torch.any(share != 0)):
+        return (
+            "loss contains non-finite values hidden by nanmean at "
+            f"epoch={epoch} batch={batch_index}: nan_share={share}"
+        )
+    return None
+
+
+def _validate_batch_numerics(
+    loss: torch.Tensor,
+    nan_share: torch.Tensor,
+    *,
+    epoch: int,
+    batch_index: int,
+) -> None:
+    error = _batch_numeric_error(
+        loss,
+        nan_share,
+        epoch=epoch,
+        batch_index=batch_index,
+    )
+    if error is not None:
+        raise FloatingPointError(error)
+
+
 def _adaptive_accumulation(
     aggregate: int,
     stage: int,
@@ -309,6 +379,7 @@ def run_training(options: TrainingOptions) -> dict[str, Any]:
     _seed_everything(rank_seed)
     started_at = datetime.now(timezone.utc).isoformat()
     source = _runtime_source()
+    resumed_from_source = None
     try:
         config = resolve_config(options.profile, context.world_size)
         resume_payload = None
@@ -321,9 +392,15 @@ def run_training(options: TrainingOptions) -> dict[str, Any]:
             saved_profile = resume_payload["config"].get("runtime", {}).get("profile")
             if saved_profile != options.profile:
                 raise ValueError("resume profile must match checkpoint profile")
+            _validate_resume_identity(
+                resume_payload,
+                config,
+                source,
+                allow_runtime_change=options.allow_runtime_change,
+            )
             config = copy.deepcopy(resume_payload["config"])
             started_at = str(resume_payload.get("started_at", started_at))
-            source = copy.deepcopy(resume_payload.get("source", source))
+            resumed_from_source = copy.deepcopy(resume_payload.get("source", {}))
         config["device"] = str(context.device)
         config["num_gpus"] = context.world_size
         _loss, model, _loader, _epoch = get_model(
@@ -402,6 +479,8 @@ def run_training(options: TrainingOptions) -> dict[str, Any]:
             torch_version=torch.__version__,
             cuda_version=torch.version.cuda,
             source=source,
+            resumed_from_source=resumed_from_source,
+            allow_runtime_change=options.allow_runtime_change,
             config=config,
             resume=str(options.resume) if options.resume else None,
             resumed_global_step=global_step,
@@ -441,16 +520,30 @@ def run_training(options: TrainingOptions) -> dict[str, Any]:
                         ),
                         single_eval_pos=single_eval_pos,
                     )
-                    loss, _nan_share = eval_criterion(
+                    loss, nan_share = eval_criterion(
                         criterion,
                         targets[single_eval_pos:],
                         output,
                         device=context.device,
                         n_out=unwrapped.n_out,
                     )
-                    if not torch.isfinite(loss):
+                    numeric_error = _batch_numeric_error(
+                        loss,
+                        nan_share,
+                        epoch=epoch,
+                        batch_index=batch_index,
+                    )
+                    invalid = torch.tensor(
+                        numeric_error is not None,
+                        device=context.device,
+                        dtype=torch.uint8,
+                    )
+                    if context.world_size > 1:
+                        dist.all_reduce(invalid, op=dist.ReduceOp.MAX)
+                    if bool(invalid.item()):
                         raise FloatingPointError(
-                            f"non-finite loss at epoch={epoch} batch={batch_index}: {loss}"
+                            numeric_error
+                            or "another distributed rank produced non-finite loss values"
                         )
                     accumulated_loss += float(loss.detach().cpu())
                     (loss / aggregate).backward()
@@ -529,6 +622,7 @@ def run_training(options: TrainingOptions) -> dict[str, Any]:
                             started_at=started_at,
                         )
                         payload["adaptive_batch_stage"] = adaptive_stage
+                        payload["resumed_from_source"] = resumed_from_source
                         path = save_training_checkpoint(
                             payload,
                             options.checkpoint_dir,
@@ -582,6 +676,7 @@ def parse_args(argv: list[str] | None = None) -> TrainingOptions:
     parser.add_argument("--log-every-steps", type=int, default=10)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--cpu-threads", type=int, default=8)
+    parser.add_argument("--allow-runtime-change", action="store_true")
     return TrainingOptions(**vars(parser.parse_args(argv)))
 
 
