@@ -7,6 +7,20 @@ from ticl.distributions import parse_distributions, sample_distributions
 # We will use the simplest form of GP model, exact inference
 
 
+_RETRYABLE_FACTORIZATION_MARKERS = (
+    "cholesky",
+    "factorization",
+    "not positive definite",
+    "not positive-definite",
+    "notpsd",
+)
+
+
+def _is_retryable_factorization_error(error):
+    message = str(error).lower()
+    return any(marker in message for marker in _RETRYABLE_FACTORIZATION_MARKERS)
+
+
 class ExactGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
@@ -62,6 +76,8 @@ class GPPrior:
                             sample_0 = d.sample().transpose(0, 1)
                             sample_1 = d.sample().transpose(0, 1)
                     except RuntimeError as error:  # torch.linalg factorization can fail for a sampled GP.
+                        if not _is_retryable_factorization_error(error):
+                            raise
                         last_error = error
                         if str(device).startswith("cuda") and torch.cuda.is_available():
                             torch.cuda.empty_cache()
