@@ -80,7 +80,7 @@ def test_cate_normalization_rejects_nonfinite_inputs() -> None:
 Run:
 
 ```bash
-.venv/bin/pytest -q \
+.venv/bin/python -m pytest -q \
   tests/test_prior_errors.py::test_cate_normalization_is_stable_near_float32_limit \
   tests/test_prior_errors.py::test_cate_normalization_rejects_nonfinite_inputs
 ```
@@ -114,7 +114,7 @@ def normalize_cate(self, y_0, y_1):
 Run:
 
 ```bash
-.venv/bin/pytest -q tests/test_prior_errors.py
+.venv/bin/python -m pytest -q tests/test_prior_errors.py
 ```
 
 Expected: all tests pass.
@@ -191,7 +191,7 @@ def test_mlp_existing_fallback_handles_infinity() -> None:
 Run:
 
 ```bash
-.venv/bin/pytest -q tests/test_prior_errors.py::test_mlp_existing_fallback_handles_infinity
+.venv/bin/python -m pytest -q tests/test_prior_errors.py::test_mlp_existing_fallback_handles_infinity
 ```
 
 Expected: the outcome tensors still contain infinity.
@@ -205,7 +205,7 @@ In `MLP.forward()`, replace the three NaN-only conditions with `not torch.isfini
 Run:
 
 ```bash
-.venv/bin/pytest -q tests/test_prior_errors.py
+.venv/bin/python -m pytest -q tests/test_prior_errors.py
 ```
 
 Expected: all tests pass.
@@ -230,7 +230,7 @@ git commit -m "fix: handle infinite MLP prior outputs"
 - [ ] **Step 1: Run all unit and smoke tests**
 
 ```bash
-.venv/bin/pytest -q
+.venv/bin/python -m pytest -q tests
 ```
 
 Expected: all tests pass.
