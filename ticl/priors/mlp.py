@@ -179,11 +179,13 @@ class MLP(torch.nn.Module):
         y_eff = self.layers_eff(causes)
         y_0 = y
         y_1 = y_0 + y_eff
-        if bool(torch.any(torch.isnan(x)).detach().cpu().numpy()) or \
-            bool(torch.any(torch.isnan(y_0)).detach().cpu().numpy()) or \
-            bool(torch.any(torch.isnan(y_1)).detach().cpu().numpy()):
-            print('Nan caught in MLP model x:', torch.isnan(x).sum(), ' y0:', 
-                  torch.isnan(y_0).sum(), ' y1:', torch.isnan(y_1).sum())
+        if not torch.isfinite(x).all() or \
+            not torch.isfinite(y_0).all() or \
+            not torch.isfinite(y_1).all():
+            print('Non-finite values caught in MLP model x:',
+                  (~torch.isfinite(x)).sum(), ' y0:',
+                  (~torch.isfinite(y_0)).sum(), ' y1:',
+                  (~torch.isfinite(y_1)).sum())
 
             x[:] = 0.0
             # y_0[:] = -100  # default ignore index for CE

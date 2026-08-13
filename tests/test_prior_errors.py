@@ -2,15 +2,31 @@ from __future__ import annotations
 
 import pytest
 import torch
+from torch import nn
 
 from ticl.dataloader import PriorDataLoader
 from ticl.priors import fast_gp
 from ticl.priors.classification_adapter import ClassificationAdapter
+from ticl.priors.mlp import MLP
 
 
 class AssertionPrior:
     def get_batch(self, **_kwargs):
         raise AssertionError("synthetic prior shape failure")
+
+
+class InfiniteOutput(nn.Module):
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return torch.full(
+            (*value.shape[:-1], 1),
+            float("inf"),
+            device=value.device,
+        )
+
+
+class ZeroOutput(nn.Module):
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return torch.zeros((*value.shape[:-1], 1), device=value.device)
 
 
 def test_dataloader_does_not_hide_prior_assertions() -> None:
@@ -140,3 +156,38 @@ def test_cate_normalization_rejects_nonfinite_inputs() -> None:
         match="potential outcomes must be finite",
     ):
         adapter.normalize_cate(y_0, y_1)
+
+
+def test_mlp_existing_fallback_handles_infinity() -> None:
+    model = MLP(
+        "cpu",
+        2,
+        1,
+        4,
+        "normal",
+        num_layers=2,
+        prior_mlp_hidden_dim=4,
+        prior_mlp_activations=nn.ReLU,
+        noise_std=0.0,
+        y_is_effect=False,
+        pre_sample_weights=False,
+        prior_mlp_dropout_prob=0.0,
+        pre_sample_causes=False,
+        prior_mlp_scale_weights_sqrt=True,
+        random_feature_rotation=False,
+        add_uninformative_features=False,
+        is_causal=False,
+        num_causes=2,
+        block_wise_dropout=False,
+        init_std=1.0,
+        sort_features=False,
+        in_clique=False,
+    )
+    model.layers_0 = nn.Sequential(nn.Identity(), InfiniteOutput())
+    model.layers_eff = nn.Sequential(ZeroOutput())
+
+    x, y_0, y_1 = model()
+
+    assert torch.count_nonzero(x) == 0
+    assert torch.count_nonzero(y_0) == 0
+    assert torch.count_nonzero(y_1) == 0
