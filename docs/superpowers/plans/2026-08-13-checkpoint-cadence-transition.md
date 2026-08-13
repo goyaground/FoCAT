@@ -149,7 +149,7 @@ def test_configure_watchdog_rejects_nonpositive_timeout() -> None:
 Run:
 
 ```bash
-.venv/bin/pytest -q tests/test_diagnose_stall.py
+.venv/bin/python -m pytest -q tests/test_diagnose_stall.py
 ```
 
 Expected: collection fails with `ModuleNotFoundError: No module named 'diagnose_stall'`.
@@ -192,7 +192,7 @@ if __name__ == "__main__":
 Run:
 
 ```bash
-.venv/bin/pytest -q tests/test_diagnose_stall.py tests/test_checkpointing.py tests/test_pretrain.py
+.venv/bin/python -m pytest -q tests/test_diagnose_stall.py tests/test_checkpointing.py tests/test_pretrain.py
 ```
 
 Expected: all tests pass.
@@ -285,7 +285,7 @@ Observe checkpoint step 210,000, which is an allowed 1,000-step transitional del
 Run:
 
 ```bash
-.venv/bin/pytest -q
+.venv/bin/python -m pytest -q tests
 git diff --check
 git status --short
 git push fork codex/focat-full-pretraining
