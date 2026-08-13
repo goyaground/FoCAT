@@ -186,3 +186,93 @@ def test_smoke_training_resumes_optimizer_scheduler_and_global_step(
     assert torch.isfinite(torch.tensor(resumed["loss"]))
     assert optimizer_steps(resumed_checkpoint) == {3}
     assert resumed_checkpoint["scheduler_state"]["last_epoch"] == first_scheduler_epoch
+
+
+def test_successful_distributed_training_destroys_process_group(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = pretrain.DistributedContext(
+        rank=0,
+        local_rank=0,
+        world_size=1,
+        device=torch.device("cpu"),
+        initialized_here=True,
+    )
+    destroyed = []
+    monkeypatch.setattr(pretrain, "_setup_distributed", lambda _device: context)
+    monkeypatch.setattr(
+        pretrain,
+        "_runtime_source",
+        lambda: {
+            "upstream_url": "https://github.com/NTAILab/FoCAT.git",
+            "upstream_base_commit": "608006595eaf2eda40c36f097c369d1efd65d500",
+            "runtime_commit": "test-runtime",
+            "runtime_dirty": False,
+        },
+    )
+    monkeypatch.setattr(pretrain.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        pretrain.dist,
+        "destroy_process_group",
+        lambda: destroyed.append(True),
+    )
+
+    summary = run_training(
+        TrainingOptions(
+            profile="smoke",
+            checkpoint_dir=tmp_path / "checkpoints",
+            seed=456,
+            max_global_steps=1,
+            checkpoint_every_steps=1,
+            keep_last=1,
+            log_every_steps=1,
+            device="cpu",
+            cpu_threads=1,
+        )
+    )
+
+    assert summary["global_step"] == 1
+    assert destroyed == [True]
+
+
+def test_rank_local_failure_does_not_enter_collective_cleanup(
+    monkeypatch,
+) -> None:
+    context = pretrain.DistributedContext(
+        rank=1,
+        local_rank=1,
+        world_size=4,
+        device=torch.device("cpu"),
+        initialized_here=True,
+    )
+    destroyed = []
+    monkeypatch.setattr(pretrain, "_setup_distributed", lambda _device: context)
+    monkeypatch.setattr(
+        pretrain,
+        "_runtime_source",
+        lambda: {
+            "upstream_url": "https://github.com/NTAILab/FoCAT.git",
+            "upstream_base_commit": "608006595eaf2eda40c36f097c369d1efd65d500",
+            "runtime_commit": "test-runtime",
+            "runtime_dirty": False,
+        },
+    )
+    monkeypatch.setattr(
+        pretrain,
+        "resolve_config",
+        lambda _profile, _world_size: (_ for _ in ()).throw(
+            RuntimeError("rank-local prior failure")
+        ),
+    )
+    monkeypatch.setattr(pretrain.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        pretrain.dist,
+        "destroy_process_group",
+        lambda: destroyed.append(True),
+    )
+
+    with pytest.raises(RuntimeError, match="rank-local prior failure"):
+        run_training(TrainingOptions(profile="smoke", device="cpu"))
+
+    assert destroyed == []

@@ -380,6 +380,7 @@ def run_training(options: TrainingOptions) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc).isoformat()
     source = _runtime_source()
     resumed_from_source = None
+    completed_normally = False
     try:
         config = resolve_config(options.profile, context.world_size)
         resume_payload = None
@@ -658,9 +659,14 @@ def run_training(options: TrainingOptions) -> dict[str, Any]:
             "started_at": started_at,
         }
         _log(context.rank, "run_stop", **summary)
+        completed_normally = True
         return summary
     finally:
-        if context.initialized_here and dist.is_initialized():
+        if (
+            completed_normally
+            and context.initialized_here
+            and dist.is_initialized()
+        ):
             dist.destroy_process_group()
 
 

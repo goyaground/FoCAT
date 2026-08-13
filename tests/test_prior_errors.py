@@ -29,6 +29,25 @@ class ZeroOutput(nn.Module):
         return torch.zeros((*value.shape[:-1], 1), device=value.device)
 
 
+class SampledGP:
+    def to(self, _device):
+        return self
+
+    def __call__(self, _x):
+        return object()
+
+
+class SampledLikelihood:
+    def __init__(self, samples: tuple[torch.Tensor, torch.Tensor]):
+        self.samples = iter(samples)
+
+    def __call__(self, _distribution):
+        return self
+
+    def sample(self) -> torch.Tensor:
+        return next(self.samples)
+
+
 def test_dataloader_does_not_hide_prior_assertions() -> None:
     loader = PriorDataLoader(
         prior=AssertionPrior(),
@@ -117,6 +136,82 @@ def test_gp_prior_does_not_retry_unrelated_runtime_errors(monkeypatch) -> None:
         )
 
     assert len(attempts) == 1
+
+
+def test_gp_prior_retries_nonfinite_draw_then_returns_finite_sample(
+    monkeypatch,
+) -> None:
+    attempts = []
+    attempt_samples = [
+        (
+            torch.full((1, 4), float("nan")),
+            torch.full((1, 4), float("nan")),
+        ),
+        (torch.zeros((1, 4)), torch.ones((1, 4))),
+    ]
+
+    def sampled_model(_x, _y, _hyperparameters):
+        samples = attempt_samples[len(attempts)]
+        attempts.append(samples)
+        return SampledGP(), SampledLikelihood(samples)
+
+    monkeypatch.setattr(fast_gp, "get_model", sampled_model)
+    prior = fast_gp.GPPrior(
+        {
+            "outputscale": 1.0,
+            "lengthscale": 1.0,
+            "noise": 0.01,
+            "sampling": "normal",
+        }
+    )
+
+    x, y_0, y_1 = prior.get_batch(
+        batch_size=1,
+        n_samples=4,
+        num_features=2,
+        device="cpu",
+    )
+
+    assert len(attempts) == 2
+    assert torch.isfinite(x).all()
+    torch.testing.assert_close(y_0, torch.zeros((4, 1)))
+    torch.testing.assert_close(y_1, torch.ones((4, 1)))
+
+
+def test_gp_prior_stops_after_five_nonfinite_draws_and_preserves_cause(
+    monkeypatch,
+) -> None:
+    attempts = []
+    nonfinite_samples = (
+        torch.full((1, 4), float("nan")),
+        torch.full((1, 4), float("nan")),
+    )
+
+    def sampled_model(_x, _y, _hyperparameters):
+        attempts.append(1)
+        return SampledGP(), SampledLikelihood(nonfinite_samples)
+
+    monkeypatch.setattr(fast_gp, "get_model", sampled_model)
+    prior = fast_gp.GPPrior(
+        {
+            "outputscale": 1.0,
+            "lengthscale": 1.0,
+            "noise": 0.01,
+            "sampling": "normal",
+        }
+    )
+
+    with pytest.raises(FloatingPointError, match="after 5 attempts") as error:
+        prior.get_batch(
+            batch_size=1,
+            n_samples=4,
+            num_features=2,
+            device="cpu",
+        )
+
+    assert len(attempts) == 5
+    assert isinstance(error.value.__cause__, FloatingPointError)
+    assert "non-finite" in str(error.value.__cause__)
 
 
 def test_cate_normalization_is_stable_near_float32_limit() -> None:

@@ -79,16 +79,34 @@ class GPPrior:
                         if not _is_retryable_factorization_error(error):
                             raise
                         last_error = error
-                        if str(device).startswith("cuda") and torch.cuda.is_available():
+                        if (
+                            str(device).startswith("cuda")
+                            and torch.cuda.is_available()
+                        ):
                             torch.cuda.empty_cache()
                         if attempt < 4:
                             print(f'GP sampling failed, retrying ({attempt + 1}/5): {error}')
                         continue
 
-                    if bool(torch.any(torch.isnan(x)).detach().cpu().numpy()):
-                        print({"noise": hypers['noise'], "outputscale": hypers['outputscale'],
-                               "lengthscale": hypers['lengthscale'], 'batch_size': batch_size})
+                    if not all(
+                        torch.isfinite(value).all()
+                        for value in (x, sample_0, sample_1)
+                    ):
+                        last_error = FloatingPointError(
+                            "GP prior produced non-finite samples"
+                        )
+                        if str(device).startswith("cuda") and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        if attempt < 4:
+                            print(
+                                "GP sampling failed, retrying "
+                                f"({attempt + 1}/5): {last_error}"
+                            )
+                        continue
 
                     # TODO: Multi output
                     return x.transpose(0, 1), sample_0, sample_1  # x.shape = (T,B,H)
-            raise RuntimeError("GP prior sampling failed after 5 attempts") from last_error
+            message = "GP prior sampling failed after 5 attempts"
+            if isinstance(last_error, FloatingPointError):
+                raise FloatingPointError(message) from last_error
+            raise RuntimeError(message) from last_error
