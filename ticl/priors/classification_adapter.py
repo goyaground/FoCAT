@@ -113,11 +113,24 @@ class ClassificationAdapter:
         return x
     
     def normalize_cate(self, y_0, y_1):
-        sigma = torch.std(torch.cat((y_0, y_1), dim=0), dim=0, keepdim=True)
+        combined = torch.cat((y_0, y_1), dim=0)
+        if not torch.isfinite(combined).all():
+            raise FloatingPointError(
+                "potential outcomes must be finite before CATE normalization"
+            )
+        scale = combined.abs().amax(dim=0, keepdim=True)
+        scale = torch.where(scale == 0, torch.ones_like(scale), scale)
+        scaled_0 = y_0 / scale
+        scaled_1 = y_1 / scale
+        sigma = torch.std(
+            torch.cat((scaled_0, scaled_1), dim=0),
+            dim=0,
+            keepdim=True,
+        )
         sigma[sigma < 1e-6] = 1
-        mean_0 = torch.mean(y_0, dim=0, keepdim=True)
-        mean_1 = torch.mean(y_1, dim=0, keepdim=True)
-        return (y_0 - mean_0) / sigma, (y_1 - mean_1) / sigma 
+        mean_0 = torch.mean(scaled_0, dim=0, keepdim=True)
+        mean_1 = torch.mean(scaled_1, dim=0, keepdim=True)
+        return (scaled_0 - mean_0) / sigma, (scaled_1 - mean_1) / sigma
 
     def __call__(self, batch_size, n_samples, num_features, device, epoch=None, single_eval_pos=None):
         info = {}

@@ -5,6 +5,7 @@ import torch
 
 from ticl.dataloader import PriorDataLoader
 from ticl.priors import fast_gp
+from ticl.priors.classification_adapter import ClassificationAdapter
 
 
 class AssertionPrior:
@@ -100,3 +101,42 @@ def test_gp_prior_does_not_retry_unrelated_runtime_errors(monkeypatch) -> None:
         )
 
     assert len(attempts) == 1
+
+
+def test_cate_normalization_is_stable_near_float32_limit() -> None:
+    adapter = ClassificationAdapter.__new__(ClassificationAdapter)
+    y_0 = torch.tensor(
+        [[-1.7e38], [-1.2e38], [-7.0e37], [-2.0e37]],
+        dtype=torch.float32,
+    )
+    y_1 = torch.tensor(
+        [[-1.6e38], [-1.1e38], [-6.0e37], [-1.0e37]],
+        dtype=torch.float32,
+    )
+    combined = torch.cat((y_0.double(), y_1.double()), dim=0)
+    sigma = combined.std(dim=0, keepdim=True)
+    expected_0 = (
+        (y_0.double() - y_0.double().mean(0, keepdim=True)) / sigma
+    ).float()
+    expected_1 = (
+        (y_1.double() - y_1.double().mean(0, keepdim=True)) / sigma
+    ).float()
+
+    actual_0, actual_1 = adapter.normalize_cate(y_0, y_1)
+
+    assert torch.isfinite(actual_0).all()
+    assert torch.isfinite(actual_1).all()
+    torch.testing.assert_close(actual_0, expected_0, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(actual_1, expected_1, rtol=1e-5, atol=1e-6)
+
+
+def test_cate_normalization_rejects_nonfinite_inputs() -> None:
+    adapter = ClassificationAdapter.__new__(ClassificationAdapter)
+    y_0 = torch.tensor([[0.0], [float("inf")]])
+    y_1 = torch.tensor([[1.0], [2.0]])
+
+    with pytest.raises(
+        FloatingPointError,
+        match="potential outcomes must be finite",
+    ):
+        adapter.normalize_cate(y_0, y_1)
